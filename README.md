@@ -96,8 +96,8 @@ Here's the SSJS (Server-Side JavaScript) script that can be used for creating th
         var NumBatches = Platform.Function.Lookup("CA_CustomObjectKeyRange", "Batches", "Key", "CA_FY25_ContactsToBeArchived") + 1;
 
         // Retrieve folder IDs
-        var BatchFolderName = "CA_2025_Delete_Batches";
-        var BackupFolderName = "CA_2025_BKUP_Batches";
+        var BatchFolderName = "CA_Delete_Batches_2025";
+        var BackupFolderName = "CA_BKUP_Batches_2025";
 
         var BatchFolderID = Folder.Retrieve({ Property: "Name", SimpleOperator: "equals", Value: BatchFolderName })[0].ID;
         var BackupFolderID = Folder.Retrieve({ Property: "Name", SimpleOperator: "equals", Value: BackupFolderName })[0].ID;
@@ -143,11 +143,166 @@ Here's the SSJS (Server-Side JavaScript) script that can be used for creating th
 
 </script>
 ```
-This SSJS script automates the creation of two sets of DEs for each deletion batch. It dynamically calculates the required number of batches, retrieves the corresponding folder IDs, and iterates through each batch to create both the sendable and backup DEs with the necessary fields. This approach ensures a structured, scalable, and restartable process for managing large-scale contact deletions.Upon execution, the script generates an equal number of Batch DEs and Backup DEs, aligned with the total batch count determined at the start of the deletion cycle.
+This SSJS script automates the creation of two sets of DEs for each deletion batch. It dynamically calculates the required number of batches, retrieves the corresponding folder IDs, and iterates through each batch to create both the sendable and backup DEs with the necessary fields. This approach ensures a structured, scalable, and restorable process for managing large-scale contact deletions.Upon execution, the script generates an equal number of Batch DEs and Backup DEs, aligned with the total batch count determined at the start of the deletion cycle.
 
 💡Tip: f the SSJS script exceeds execution time limits in your account, consider splitting the logic into two separate scripts—one for creating deletion batch DEs and another for backup DEs.
 
+## Step 3: Set Up Logging for Monitoring and Debugging
 
+To effectively monitor the contact deletion process, I use two non-sendable DEs: one for process tracking and another for debugging.
+  
+The process log DE captures key events for each batch, including both batch creation and contact deletion. Since each batch generates two entries, I use a composite primary key consisting of ProcessDate and BatchName to ensure uniqueness. To maintain data integrity and avoid duplication, this DE is cleared at the start of each new deletion cycle. Here’s the schema for this DE, along with some illustrative data:
 
+| Field Name   | Data Type (Length) | PK / Nullable   | Default Value  | Valid Values                | Example Data   |
+|--------------|--------------------|-----------------|----------------|-----------------------------|----------------|
+| ProcessDate  | Date               | Primary Key     | Current date   |                             | May 25, 2025   |
+| BatchName    | Text (10)          | Nullable        |                |                             | S-1            |
+| LastRowKey   | Number             | Nullable        |                |                             | 50,001         |
+| BatchNum     | Number             | Nullable        |                |                             | 1              |
+| Category     | Number             | Nullable        |                | BatchCreation, BatchDeletion| BatchCreation  |
+
+For debugging, I maintain a lightweight non-sendable DE with two fields: a Log field (text, no length constraint) to store messages and errors, and a CreatedDate field to timestamp each entry. I also create a filtered DE to isolate logs for the current date, making it easier to troubleshoot recent activity. Given the potential for rapid growth, it’s important to apply a suitable data retention policy to this DE.
+
+💡 Tips:
+  - Create filtered DEs from the process and debug logs, to be able to focus on most recent logs.
+  - The debug log  DE can grow pretty quickly, so it's important to have an appropriate data retention policy configured.
+
+## Step 4: Populate the Batches
+
+Once the batch and backup DEs are created, the next step is to populate them with contact data from the master list. This is done using two separate SSJS scripts: 
+  - Script 1- Initialize the Process: The first script is run just once to initialize the process log and create the first few batches. 💡Tip: If the script times      out in your account, you can reduce the number of batches processed in this script by adjusting the loop variable (e.g., s < 3).
+  - Script 2- Continue Batch Population via Automation: This script is intended to run as part of an automation (details in the next section) and picks up where       the first script stopped. It processes contact deletion batches incrementally throughout the day. By adjusting the 'EndBatch' variable, you can control how        many batches are processed in each run. The number of daily runs can also be adjusted depending on your Marketing Cloud instance’s performance and workload. I     usually schedule this one step automation to run three to four times a day for efficient processing without overloading the system.
+
+Both the scripts retrieve rows from the master list ('ContactsToBeDeleted' DE) in batches of 50,000 contacts and then copies them into contact deletion and backup DEs. They also log the details for each batch, including last 'RowKey' processed, in the Process Log, which serves as a reference for the next batch of DE creation. Additionally, they handle errors and debugging by logging progress and errors in the Debug Log DE.
+
+### Script 1- Initialize the Process
+
+```javascript
+<script runat="server" type="text/javascript">
+    Platform.Load("Core",'1.1');
+    
+    var rowsData;
+    var recordCount = 0;
+    var source = DataExtension.Init("ContactsToBeDeleted");
+    var totalProcessed = Platform.Function.Lookup('CA_CustomObjectKeyRange','StartRowIndex','Key','ContactsToBeDeleted_2025');
+    var depre = "CA_2025_Batch";
+	  var bkpre = "CA_2025_BKUP_Batch";
+    
+    try {	
+        for(s = 1; s<3; s++){
+			var dekey = depre.concat(s);
+			var DE = DataExtension.Init(dekey);
+			var bkkey = bkpre.concat(s);
+			var BK = DataExtension.Init(bkkey);
+			var batchprocessed = 0;
+			var arr = [];
+			var max = 0;
+			var log1 = Platform.Function.InsertData("CA_DebugLogs",["log"],["Batch DE Key = " + dekey]);
+			
+			do {    
+				rowsData = source.Rows.Retrieve({Property:"RowKey",SimpleOperator:"greaterThanOrEqual",Value:totalProcessed});
+				recordCount = rowsData.length;
+				
+				for( i = 0; i < recordCount; i++) {
+					var SubKey = rowsData[i].SubscriberKey;
+					var EmailAddr = rowsData[i].EmailAddress;
+					max = rowsData[i].RowKey;
+					var payload = {
+						SubscriberKey: SubKey,
+						EmailAddress: EmailAddr
+						};
+					var addedRowCount = DE.Rows.Add(payload);			
+					var addedRowCount2 = BK.Rows.Add(payload);					
+					arr.push(max);
+					}
+				arr.sort(function(a, b){return b-a});
+				totalProcessed = arr[0];
+				batchprocessed += recordCount;	
+					  
+				if(parseFloat(batchprocessed) >= 50000) {			
+					break;
+				}
+			 	totalProcessed ++;   
+			} while (recordCount > 0) 
+		
+		var processlog = Platform.Function.InsertData("CA_ProcessLog",["BatchName","LastRowKey", "BatchNum"],["S-"+s,totalProcessed, s]);
+		var dbuglog = Platform.Function.InsertData("CA_DebugLogs",["log"],["Last processed row after the while Loop in " + "s" + s+ " = " + totalProcessed]);
+		totalProcessed ++;
+		}
+    
+	} catch(e) {
+	    var debugDE = DataExtension.Init("CA_DebugLogs");
+        var arrDebug = [{log: 'Error in CA_2025_PopulateBatches js: ' + Stringify(e)}];
+        debugDE.Rows.Add(arrDebug);
+}      
+</script>
+```
+### Script 2: Continue Batch Population via Automation 
+
+```javascript
+<script runat="server" type="text/javascript">
+  Platform.Load("Core",'1.1');
+    
+  var rowsData;
+  var recordCount = 0;
+  var source = DataExtension.Init("ContactsToBeDeleted");
+    
+  try {
+      var processLogRows = Platform.Function.LookupOrderedRows("CA_ProcessLog",1,"LastRowKey desc","Category","BatchCreation");
+      var totalProcessed = processLogRows[0]["LastRowKey"];
+      var startBatch = 1.0 + processLogRows[0]["BatchNum"];
+      var EndBatch = 1.0 + startBatch
+      	
+      var log1 = Platform.Function.InsertData("CA_DebugLogs",["log"],["Starting point : " + totalProcessed]);
+      var depre = "CA_2025_Batch";
+	    var bkpre = "CA_2025_BKUP_Batch";
+      
+      for(s = startBatch; s <= EndBatch; s++){
+        var dekey = depre.concat(s);
+		    var DE = DataExtension.Init(dekey);
+		    var bkkey = bkpre.concat(s);
+		    var BK = DataExtension.Init(bkkey);
+		    var batchprocessed = 0;
+	    	var arr = [];
+        var max = 0;
+        var log2 = Platform.Function.InsertData("CA_DebugLogs",["log"],["Batch DE Key = " + dekey]);
+        
+        do {    
+          rowsData = source.Rows.Retrieve({Property:"RowKey",SimpleOperator:"greaterThan",Value:totalProcessed});
+          recordCount = rowsData.length;
+          
+          for( i = 0; i < recordCount; i++) {
+              var SubKey = rowsData[i].SubscriberKey;
+              var EmailAddr = rowsData[i].EmailAddress;
+              max = rowsData[i].RowKey;
+              var payload = {
+                    SubscriberKey: SubKey,
+                    EmailAddress: EmailAddr
+                    };	
+			        var addedRowCount = DE.Rows.Add(payload);
+              var addedRowCount2 = BK.Rows.Add(payload);			
+			        arr.push(max);
+          }
+          
+          arr.sort(function(a, b){return b-a});
+          totalProcessed = arr[0];
+          batchprocessed += recordCount;
+                
+          if(parseFloat(batchprocessed) >= 50000) {			
+              break;
+          }
+      } while (recordCount > 0) 
+		
+		var processlog = Platform.Function.InsertData("CA_ProcessLog",["BatchName","LastRowKey", "BatchNum"],["S-"+s,totalProcessed, s]);
+    var dbuglog = Platform.Function.InsertData("CA_DebugLogs",["log"],["Last processed row after the while Loop in " + "s" + s+ " = " + totalProcessed]);
+		}
+      
+  } catch(e) {
+      var debugDE = DataExtension.Init("CA_DebugLogs");
+      var arrDebug = [{log: 'Error in CA_2025_PopulateBatches js: ' + Stringify(e)}];
+      debugDE.Rows.Add(arrDebug);
+    }     
+</script> 
+```
 
 

@@ -186,54 +186,54 @@ Both the scripts retrieve rows from the master list ('ContactsToBeDeleted' DE) i
     var source = DataExtension.Init("ContactsToBeDeleted");
     var totalProcessed = Platform.Function.Lookup('CA_CustomObjectKeyRange','StartRowIndex','Key','ContactsToBeDeleted_2025');
     var depre = "CA_2025_Batch";
-	  var bkpre = "CA_2025_BKUP_Batch";
+    var bkpre = "CA_2025_BKUP_Batch";
     
     try {	
         for(s = 1; s<3; s++){
-			var dekey = depre.concat(s);
-			var DE = DataExtension.Init(dekey);
-			var bkkey = bkpre.concat(s);
-			var BK = DataExtension.Init(bkkey);
-			var batchprocessed = 0;
-			var arr = [];
-			var max = 0;
-			var log1 = Platform.Function.InsertData("CA_DebugLogs",["log"],["Batch DE Key = " + dekey]);
-			
-			do {    
-				rowsData = source.Rows.Retrieve({Property:"RowKey",SimpleOperator:"greaterThanOrEqual",Value:totalProcessed});
-				recordCount = rowsData.length;
-				
-				for( i = 0; i < recordCount; i++) {
-					var SubKey = rowsData[i].SubscriberKey;
-					var EmailAddr = rowsData[i].EmailAddress;
-					max = rowsData[i].RowKey;
-					var payload = {
-						SubscriberKey: SubKey,
-						EmailAddress: EmailAddr
-						};
-					var addedRowCount = DE.Rows.Add(payload);			
-					var addedRowCount2 = BK.Rows.Add(payload);					
-					arr.push(max);
-					}
-				arr.sort(function(a, b){return b-a});
-				totalProcessed = arr[0];
-				batchprocessed += recordCount;	
-					  
-				if(parseFloat(batchprocessed) >= 50000) {			
-					break;
-				}
-			 	totalProcessed ++;   
-			} while (recordCount > 0) 
+		var dekey = depre.concat(s);
+		var DE = DataExtension.Init(dekey);
+		var bkkey = bkpre.concat(s);
+		var BK = DataExtension.Init(bkkey);
+		var batchprocessed = 0;
+		var arr = [];
+		var max = 0;
+		var log1 = Platform.Function.InsertData("CA_DebugLogs",["log"],["Batch DE Key = " + dekey]);
 		
-		var processlog = Platform.Function.InsertData("CA_ProcessLog",["BatchName","LastRowKey", "BatchNum"],["S-"+s,totalProcessed, s]);
-		var dbuglog = Platform.Function.InsertData("CA_DebugLogs",["log"],["Last processed row after the while Loop in " + "s" + s+ " = " + totalProcessed]);
-		totalProcessed ++;
-		}
+		do {    
+			rowsData = source.Rows.Retrieve({Property:"RowKey",SimpleOperator:"greaterThanOrEqual",Value:totalProcessed});
+			recordCount = rowsData.length;
+			
+			for( i = 0; i < recordCount; i++) {
+				var SubKey = rowsData[i].SubscriberKey;
+				var EmailAddr = rowsData[i].EmailAddress;
+				max = rowsData[i].RowKey;
+				var payload = {
+					SubscriberKey: SubKey,
+					EmailAddress: EmailAddr
+					};
+				var addedRowCount = DE.Rows.Add(payload);			
+				var addedRowCount2 = BK.Rows.Add(payload);					
+				arr.push(max);
+				}
+			arr.sort(function(a, b){return b-a});
+			totalProcessed = arr[0];
+			batchprocessed += recordCount;	
+				  
+			if(parseFloat(batchprocessed) >= 50000) {			
+				break;
+			}
+			totalProcessed ++;   
+		} while (recordCount > 0) 
+	
+	var processlog = Platform.Function.InsertData("CA_ProcessLog",["BatchName","LastRowKey", "BatchNum"],["S-"+s,totalProcessed, s]);
+	var dbuglog = Platform.Function.InsertData("CA_DebugLogs",["log"],["Last processed row after the while Loop in " + "s" + s+ " = " + totalProcessed]);
+	totalProcessed ++;
+	}
     
-	} catch(e) {
-	    var debugDE = DataExtension.Init("CA_DebugLogs");
-        var arrDebug = [{log: 'Error in CA_2025_PopulateBatches js: ' + Stringify(e)}];
-        debugDE.Rows.Add(arrDebug);
+} catch(e) {
+    var debugDE = DataExtension.Init("CA_DebugLogs");
+var arrDebug = [{log: 'Error in CA_2025_PopulateBatches js: ' + Stringify(e)}];
+debugDE.Rows.Add(arrDebug);
 }      
 </script>
 ```
@@ -304,5 +304,86 @@ Both the scripts retrieve rows from the master list ('ContactsToBeDeleted' DE) i
     }     
 </script> 
 ```
+## Step 5: Deletion and Monitoring
 
+The final step is to set up an automation to delete batches one by one. But first we need to create an API endpoint using SFMC’s REST API to automatically trigger contact deletion of the batches we created.
+
+### Pre-requisite: Create an API endpoint
+
+To implement this automated contact deletion, we need to create an endpoint (https://CLIENT_BASE.rest.marketingcloudapis.com/contacts/v1/contacts/actions/delete) with correct permissions, using the below steps:
+- In the Setup in the Parent Business Unit, navigate to Platform Tools > Apps > Installed Packages.
+- Click "New" and provide a name and description.
+- Within the package, Add Component and select API Integration >> Server-to-Server integration.
+- Choose Read and Write Permissions for List and Subscribers.
+- Save and copy the Client Id, Client Secret, and Client Base.
+
+Once the API endpoint is ready, create an SSJS script activity using this endpoint:
+```javascript
+<script language="javascript" runat="server"> 
+	Platform.Load("core","1");
+	
+	// Retrieve the latest batch number from the process log and Initialize DE key
+	var processLogRows = Platform.Function.LookupOrderedRows("CA_ProcessLog",1,"BatchNum desc","Category","BatchDeletion");
+	var batchNm = 1.0;
+	if (processLogRows.length > 0) {
+	    batchNm += processLogRows[0]["BatchNum"];
+	} 
+	var depre = "CA_2025_Batch";
+	var deKey = depre.concat(batchNm);
+	var log1 = Platform.Function.InsertData("CA_DebugLogs",["log"],["Batch DE Key = " + deKey]);
+	
+	// Authenticate and get the access token
+	var auth = HTTP.Post(
+		'https://CLIENT_BASE.auth.marketingcloudapis.com/v2/token/', 
+		'application/json', 
+		'{"grant_type": "client_credentials","client_id":"CLIENT_IT","client_secret":"CLIENT_SECRET","account_id": "PARENTBU_MID"}'
+	);
+	
+	var authobj = Platform.Function.ParseJSON(auth.Response[0]);
+	try {
+		// If the access token is available, proceed with the deletion request
+	    	if (authobj.access_token) {
+	    	    var del = HTTP.Post(
+	                authobj.rest_instance_url+'contacts/v1/contacts/actions/delete?type=listReference', 
+	                'application/json', 
+	                '{
+	                    "deleteOperationType":"ContactAndAttributes",
+	                    "targetList":{
+	                        "listKey":"' + deKey + '",
+	                        "listType":{"listTypeID":3}
+	                    },
+	                    "deleteListWhenCompleted":false,
+	                    "deleteListContentsWhenCompleted":true
+	                }', 
+	                ["Authorization"], 
+	                ["Bearer " + authobj.access_token]
+	            );
+	            
+	        // If there are no errors in the deletion response, update process log and log deletion response
+		var delobj = Platform.Function.ParseJSON(del.Response[0]);
+		if (delobj.hasErrors == false) {
+		    var logthis = Platform.Function.InsertData("CA_ProcessLog",["BatchName","BatchNum", "Category"],["S-"+batchNm,batchNm, "BatchDeletion"]);
+		    var debugDE = DataExtension.Init("CA_DebugLogs");
+		    var arrDebug = [{log: 'delobj: ' + Stringify(delobj)}];
+		    debugDE.Rows.Add(arrDebug);
+		}
+	    	}
+    	} catch(e) {
+            // Log any errors that occur during the process
+            var debugDE = DataExtension.Init("RM_DebugLogs");
+            var arrDebug = [{log: 'Error in Contact Deletion js: ' + Stringify(e)}];
+            debugDE.Rows.Add(arrDebug);
+        }
+</script>
+```
+This script enables you to delete contacts based on the specific DE of the current batch in progress, which follows the batch previously deleted and logged in the process log. You pass the external key of the DE as listKey to the contact deletion endpoint. Next, create an automation with this script activity and schedule it to run at regular intervals, depending on the load and speed of the SFMC instance.
+
+You can monitor the status of a contact deletion job at any time within the Contact Builder of the parent BU. To do this, navigate to Contact Builder and select Contact Analytics from the top menu. The dashboard will display completed jobs as green bars and any job in progress as blue bar. Click on any of the bars to examine the job status in detail.
+
+💡Additional Tips: 
+- You can configure API parameters to manage how the deletion DE and its contents are handled during the deletion operation.  When 'deleteListWhenCompleted' is 
+  set to true, the DE will be deleted upon completion of the Contact Deletion process. And, when 'deleteListContentsWhenCompleted' is set to true, the records 
+  within the DE will be deleted during the Contact Deletion process.
+- I recommend starting with a 12-hour schedule for the automation and monitoring a few runs. Adjust the schedule based on the maximum time taken by any batch. To 
+  prevent job, overlap, add an additional buffer of 2 hours. For example, if the maximum time taken by the job is 5.5 hours, schedule it to run every 8 hours.
 

@@ -152,13 +152,13 @@ To effectively monitor the contact deletion process, I use two non-sendable DEs:
   
 The process log DE captures key events for each batch, including both batch creation and contact deletion. Since each batch generates two entries, I use a composite primary key consisting of ProcessDate and BatchName to ensure uniqueness. To maintain data integrity and avoid duplication, this DE is cleared at the start of each new deletion cycle. Here’s the schema for this DE, along with some illustrative data:
 
-| Field Name   | Data Type (Length) | PK / Nullable   | Default Value  | Valid Values                | Example Data   |
-|--------------|--------------------|-----------------|----------------|-----------------------------|----------------|
-| ProcessDate  | Date               | Primary Key     | Current date   |                             | May 25, 2025   |
-| BatchName    | Text (10)          | Nullable        |                |                             | S-1            |
-| LastRowKey   | Number             | Nullable        |                |                             | 50,001         |
-| BatchNum     | Number             | Nullable        |                |                             | 1              |
-| Category     | Number             | Nullable        |                | BatchCreation, BatchDeletion| BatchCreation  |
+| Field Name   | Data Type (Length)   | PK / Nullable     | Default Value  | Valid Values                | Example Data   |
+|--------------|----------------------|-------------------|----------------|-----------------------------|----------------|
+| ProcessDate  | Date                 | Primary Key       | Current date   |                             | May 25, 2025   |
+| BatchName    | Text (10)            | Nullable          |                |                             | S-1            |
+| LastRowKey   | Number               | Nullable          |                |                             | 50,001         |
+| BatchNum     | Number               | Nullable          |                |                             | 1              |
+| Category     | Number               | Nullable          |                | BatchCreation, BatchDeletion| BatchCreation  |
 
 For debugging, I maintain a lightweight non-sendable DE with two fields: a Log field (text, no length constraint) to store messages and errors, and a CreatedDate field to timestamp each entry. I also create a filtered DE to isolate logs for the current date, making it easier to troubleshoot recent activity. Given the potential for rapid growth, it’s important to apply a suitable data retention policy to this DE.
 
